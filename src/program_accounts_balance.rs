@@ -1,16 +1,19 @@
 use std::{str::FromStr, sync::Arc, time::Duration};
 
 use log::{error, info};
-use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
+use solana_account_decoder_client_types::{UiAccountEncoding, UiDataSliceConfig};
 use solana_client::{
     nonblocking::rpc_client::RpcClient,
     rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
     rpc_filter::{Memcmp, RpcFilterType},
 };
-use solana_sdk::{native_token::lamports_to_sol, pubkey::Pubkey};
+use solana_pubkey::Pubkey;
 use tokio::{task::JoinHandle, time::sleep};
 
-use crate::metrics::{remove_metric_total_balance_sol, update_metric_total_balance_sol};
+use crate::{
+    metrics::{remove_metric_total_balance_sol, update_metric_total_balance_sol},
+    ui_account::{decode_ui_account_lamports, lamports_to_sol},
+};
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(300);
 const BACKOFF_DURATION: Duration = Duration::from_secs(10);
@@ -62,7 +65,7 @@ impl FromStr for ProgramAccountsBalanceConfig {
 
         let program = match params.next() {
             Some(program) => Pubkey::from_str(program)
-                .expect(&format!("Failed to parse program ID from '{program}'")),
+                .unwrap_or_else(|_| panic!("Failed to parse program ID from '{program}'")),
             None => anyhow::bail!("Program ID not found!"),
         };
 
@@ -87,7 +90,7 @@ pub fn spawn_program_accounts_balance_watcher(
         info!("Watching: {config:?}");
         loop {
             let response = rpc_client
-                .get_program_accounts_with_config(
+                .get_program_ui_accounts_with_config(
                     &config.program,
                     RpcProgramAccountsConfig {
                         filters: Some(config.filters.clone()),
@@ -114,8 +117,18 @@ pub fn spawn_program_accounts_balance_watcher(
                 }
             };
 
-            let balance =
-                lamports_to_sol(response.iter().map(|(_, account)| account.lamports).sum());
+            let lamports: Option<Vec<u64>> = response
+                .iter()
+                .map(|(_, account)| decode_ui_account_lamports(account))
+                .collect();
+            let Some(lamports) = lamports else {
+                error!("Failed to decode account from RPC response");
+                remove_metric_total_balance_sol(&config.name);
+                sleep(BACKOFF_DURATION).await;
+                continue;
+            };
+
+            let balance = lamports_to_sol(lamports.into_iter().sum());
             update_metric_total_balance_sol(&config.name, balance);
             let count = response.len();
             info!(
