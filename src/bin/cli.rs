@@ -9,7 +9,7 @@ use solana_balance_watcher::{
     },
 };
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::pubkey::Pubkey;
+use solana_pubkey::Pubkey;
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use tracing_log::LogTracer;
 
@@ -53,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
     for named_address in flags.named_addresses {
         if let Some((name, pubkey_str)) = named_address.split_once('=') {
             let pubkey = Pubkey::from_str(pubkey_str)
-                .expect(&format!("Cannot parse pubkey from '{pubkey_str}'"));
+                .unwrap_or_else(|_| panic!("Cannot parse pubkey from '{pubkey_str}'"));
             if let Some(previous_name) = named_pubkeys.get(&pubkey) {
                 panic!("Trying to store pubkey '{pubkey}' with name '{name}' but it is stored with a different name '{previous_name}' already");
             }
